@@ -1,0 +1,445 @@
+.TH MOSS 1 "2025-01-01" "mOSs v1.0" "mOSs Reference Manual"
+.SH NAME
+moss \- mOSs Native System Environment — shell, SDK, and CLI reference
+.SH SYNOPSIS
+.B moss-shell
+.RB [ \-\-color
+.IR color ]
+.RB [ \-\-crt
+.IR mode ]
+.RB [ \-\-mode
+.IR terminal | wm ]
+
+.B moss-fetch
+.RB [ \-\-json ]
+.RB [ \-\-cpu ]
+.RB [ \-\-mem ]
+
+.B moss-bridge
+.RB [ \-\-socket
+.IR path ]
+.RB [ \-\-daemonize ]
+
+.B moss-config
+.B get
+.I key
+|
+.B set
+.I key value
+
+.SH DESCRIPTION
+.B mOSs
+is a custom bootable Linux distribution designed around a terminal-green
+CRT-aesthetic.  It boots directly into the
+.B moss-shell
+— a native ncurses TUI that replicates the web-based
+.IR mOSs
+interface in full hardware isolation.
+
+.PP
+The system consists of four major components:
+
+.TP
+.B moss-shell
+The primary user environment.  Provides two modes:
+.RS
+.TP
+.I terminal
+Full-screen shell with scrollback, command history, tab-completion, and
+VT-style CRT rendering.
+.TP
+.I wm
+Floating-window manager with a Start Menu, draggable windows, and built-in
+apps (system info, task manager, file manager, clock, calculator, notes,
+games, settings).
+.RE
+
+.TP
+.B moss-bridge
+Background daemon (started by
+.BR /init )
+that continuously polls
+.I /proc
+and
+.I /sys
+for live hardware metrics.  Serves JSON via a Unix socket at
+.IR /run/moss-bridge.sock .
+Also manages an SQLite3 database
+.RI ( /var/lib/moss/moss.db )
+for high-scores, AMA messages, and user configuration.
+
+.TP
+.B libmoss
+C SDK for writing native mOSs applications.  Provides windowing, drawing,
+terminal emulation, system info, ASCII art rendering, score submission,
+and CRT effects.  Link with
+.IR \-lmoss\ \-lncurses .
+
+.TP
+.B moss-fetch
+.BR neofetch -style
+system information display.  Queries
+.B moss-bridge
+for real-time data and renders it alongside the mOSs ASCII eye logo.
+
+.SH SHELL COMMANDS
+.TP
+.B ls \fR[\fI-l\fR|\fI-a\fR|\fI-la\fR]
+List files in the current virtual directory.
+.TP
+.B cat \fIfile\fR
+Print file contents to the terminal.
+.TP
+.B cd \fIdir\fR
+Change the current directory.
+.TP
+.B pwd
+Print working directory.
+.TP
+.B touch \fIfile\fR
+Create an empty file.
+.TP
+.B mkdir \fIdir\fR
+Create a directory.
+.TP
+.B mv \fIsrc dst\fR
+Move or rename a file.
+.TP
+.B rm \fR[\fI-rf\fR] \fIfile\fR
+Remove a file or directory.
+.TP
+.B nano \fIfile\fR
+Open a minimal full-screen text editor.
+.TP
+.B echo \fItext\fR
+Print text.  Synonym:
+.BR say .
+.TP
+.B date
+Show current date and time.
+.TP
+.B whoami
+Show the current username.
+.TP
+.B clear
+Clear the terminal scrollback.
+.TP
+.B fetch
+Display system information in neofetch layout.
+.TP
+.B color \fIname\fR
+Set the global accent colour.
+.IR name " may be: " green ", " red ", " yellow ", " blue ", " cyan ", " white ", " magenta .
+.TP
+.B crt \fR[\fIoff\fR|\fIlight\fR|\fIstrong\fR]
+Set the CRT effect mode.  Default: light.
+.TP
+.B bg \fR[\fIon\fR|\fIoff\fR|\fIstatus\fR]
+Toggle the background image.
+.TP
+.B size \fIN\fR
+Display a note about font size.  Actual size depends on the terminal emulator.
+.TP
+.B wm
+Enter the Window Manager mode.  Press F4 or Ctrl-Q to return to the shell.
+.TP
+.B startup \fR[\fIterminal\fR|\fIwm\fR]
+Display or set the default startup mode.
+.TP
+.B login
+Prompt for a new username/password.  Usernames other than
+.B moss
+(password:
+.IR moss )
+are treated as guest accounts.
+.TP
+.B logout
+Log out and return to the login screen.
+.TP
+.B reboot
+Reboot the system.
+.TP
+.B shutdown
+Power off the system.
+.TP
+.B meow
+Display a cat ASCII art.
+.TP
+.B ferris
+Display Ferris the crab (Rust mascot).
+.TP
+.B gay
+Display a six-colour pride flag.
+.TP
+.B bounce
+Launch a bouncing animation (fun easter egg).
+.TP
+.B hits
+Increment and display the visit counter.
+.TP
+.B ama
+Open the Ask Me Anything form.  Submissions are stored in
+.IR /var/lib/moss/moss.db .
+.TP
+.B mine \fR|\fB snake \fR|\fB tetris \fR|\fB 2048 \fR|\fB pong
+Launch a built-in game (available in WM mode).
+.TP
+.B help
+Display this command reference.
+.TP
+.B man \fImoss\fR
+Display this manual page.
+
+.SH WINDOW MANAGER KEYBINDINGS
+.TP
+.B F1
+Toggle Start Menu.
+.TP
+.B F2
+Close focused window.
+.TP
+.B F3
+Cycle focus to next window.
+.TP
+.B F4 / Ctrl-Q
+Exit Window Manager, return to terminal shell.
+.TP
+.B Ctrl-H/J/K/L
+Move focused window left/down/up/right.
+.TP
+.B 1\(en9
+Quick-open Start Menu entry by index.
+
+.SH CONFIGURATION
+mOSs configuration is stored at
+.IR /etc/moss/config.json .
+Keys:
+.TP
+.B terminal_color
+Hex accent colour, e.g.
+.IR "#00ff00" .
+.TP
+.B crt_effect
+.IR off ", " light ", or " strong .
+.TP
+.B background_enabled
+.IR true " or " false .
+.TP
+.B startup_mode
+.IR terminal " or " wm .
+.TP
+.B audio_enabled
+.IR true " or " false .
+.PP
+Use
+.B moss-config get \fIkey\fR
+and
+.B moss-config set \fIkey value\fR
+to read and write values.  Changes take effect on next boot or shell restart.
+
+.SH PROGRAMMING GUIDE — HELLO WORLD
+.PP
+A minimal mOSs application using libmoss:
+
+.PP
+.nf
+.RS
+/* hello.c */
+#include <moss.h>
+
+int main(void) {
+    MOSS_Ctx    *ctx = moss_init();
+    MOSS_Window *win = moss_create_window(ctx, "Hello mOSs", 40, 10);
+
+    moss_set_color(win, MOSS_COLOR_GREEN, MOSS_COLOR_BLACK);
+    moss_set_attr(win, MOSS_ATTR_BOLD);
+    moss_print(win, 2, 4, "Hello from mOSs!");
+
+    moss_set_attr(win, MOSS_ATTR_NORMAL);
+    moss_print(win, 4, 4, "Press ESC or Ctrl-Q to quit.");
+
+    /* Load ASCII art */
+    MOSS_AsciiArt *art = moss_ascii_load(NULL);
+    if (art) moss_draw_ascii(win, art, "eye", 6, 2, MOSS_COLOR_GREEN);
+
+    /* Display live CPU usage */
+    MOSS_SysInfo *si = moss_sysinfo_get();
+    if (si) {
+        moss_printf(win, 8, 4, "CPU: %d%%", moss_sysinfo_cpu_pct(si));
+        moss_sysinfo_free(si);
+    }
+
+    moss_window_show(win);
+    moss_event_loop(ctx);   /* blocks until ESC */
+
+    moss_window_destroy(win);
+    moss_ascii_destroy(art);
+    moss_destroy(ctx);
+    return 0;
+}
+.RE
+.fi
+
+.PP
+Compile on mOSs:
+.PP
+.nf
+.RS
+gcc -O2 hello.c -lmoss -lncurses -lm -o hello
+./hello
+.RE
+.fi
+
+.SH SDK REFERENCE (SUMMARY)
+.TP
+.B moss_init()
+Initialise rendering context; call once at startup.
+.TP
+.B moss_destroy(ctx)
+Tear down context; restore terminal.
+.TP
+.B moss_event_loop(ctx)
+Run blocking event loop until quit.
+.TP
+.B moss_create_window(ctx, title, w, h)
+Create a floating window.  0 for w/h = full screen.
+.TP
+.B moss_window_show(win)
+Make window visible.
+.TP
+.B moss_print(win, row, col, text)
+Draw text at a position inside the window.
+.TP
+.B moss_printf(win, row, col, fmt, ...)
+printf-style text drawing.
+.TP
+.B moss_set_color(win, fg, bg)
+Set foreground and background colour for subsequent draws.
+.TP
+.B moss_set_attr(win, attr)
+Set text attributes (BOLD, DIM, UNDERLINE, BLINK, REVERSE).
+.TP
+.B moss_draw_progress_bar(win, row, col, width, pct, color)
+Render a [====    ] bar.
+.TP
+.B moss_sysinfo_get()
+Query moss-bridge for a live metrics snapshot.
+.TP
+.B moss_ascii_load(cfg)
+Load /usr/share/moss/ascii/ascii_art.json.
+.TP
+.B moss_ascii_get(art, name)
+Retrieve a named art string.
+.TP
+.B moss_draw_ascii(win, art, name, row, col, color)
+Render ASCII art into a window.
+.TP
+.B moss_set_crt_mode(ctx, mode)
+Set CRT effect: MOSS_CRT_OFF / MOSS_CRT_LIGHT / MOSS_CRT_STRONG.
+.TP
+.B moss_scores_get(game, n, out)
+Fetch the top-n high scores for a game.
+.TP
+.B moss_scores_submit(game, username, score)
+Submit a new high score.
+.TP
+.B moss_config_load()
+Parse /etc/moss/config.json.
+.TP
+.B moss_config_get_str(cfg, key, default)
+Read a string config value.
+
+.SH FILES
+.TP
+.I /init
+Custom PID-1 init script.
+.TP
+.I /bin/moss-shell
+Native mOSs shell binary.
+.TP
+.I /bin/moss-bridge
+System metrics daemon.
+.TP
+.I /bin/moss-fetch
+System info CLI.
+.TP
+.I /lib/libmoss.so.1
+Shared SDK library.
+.TP
+.I /lib/libmoss.a
+Static SDK library.
+.TP
+.I /etc/moss/config.json
+Per-system configuration.
+.TP
+.I /var/lib/moss/moss.db
+SQLite3 database (scores, AMA, config).
+.TP
+.I /run/moss-bridge.sock
+Unix socket for bridge IPC.
+.TP
+.I /usr/share/moss/ascii/ascii_art.json
+ASCII art resource file.
+.TP
+.I /usr/share/moss/sounds/chime.mp3
+Boot chime audio.
+.TP
+.I /usr/share/moss/bg.png
+Background image used in GRUB theme.
+.TP
+.I /boot/grub/grub.cfg
+GRUB 2 bootloader configuration.
+
+.SH BOOT SEQUENCE
+.PP
+.nf
+BIOS/UEFI → GRUB 2 (custom mOSs theme)
+    → Linux 6.6 kernel (silent, loglevel=3)
+    → /init (custom PID-1 shell script)
+        → mount proc/sys/dev/run/tmp
+        → mdev -s  (device population)
+        → modprobe GPU / input / sound drivers
+        → moss-bridge --daemonize
+        → aplay chime.mp3 (async)
+        → setsid /bin/moss-shell </dev/tty1 >/dev/tty1
+            → boot splash (eye ASCII + module loader)
+            → login screen
+            → terminal or wm mode
+.fi
+
+.SH ENVIRONMENT
+.TP
+.B MOSS_BRIDGE_SOCK
+Override the bridge socket path.
+.TP
+.B MOSS_CONFIG
+Override the config file path.
+.TP
+.B TERM
+Must be a colour-capable terminal (e.g., xterm-256color).
+.TP
+.B MOSS_MODE
+Set to
+.I compositor
+in kernel cmdline to launch Wayland compositor instead of ncurses shell.
+
+.SH EXIT STATUS
+.TP
+.B 0
+Normal exit.
+.TP
+.B 1
+Initialisation failure (terminal unavailable, bridge not running).
+
+.SH SEE ALSO
+.BR ncurses (3),
+.BR sqlite3 (1),
+.BR aplay (1),
+.BR grub-mkrescue (1),
+.BR proc (5)
+
+.SH AUTHOR
+maseratislick  —  Report bugs via Discord: maseratislick
+
+.SH COPYRIGHT
+mOSs is free software released under the MIT licence.

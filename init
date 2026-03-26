@@ -1,0 +1,212 @@
+#!/bin/sh
+# =============================================================================
+#  mOSs-Native :: /init
+#  PID 1 — replaces systemd/OpenRC entirely.
+#  Execution order:
+#    1. Mount essential pseudo-filesystems
+#    2. Initialize /dev (devtmpfs or mdev)
+#    3. Probe GPU / sound / input kernel modules
+#    4. Optionally mount persistent overlay (ext4 on /dev/sda2)
+#    5. Start moss-bridge (system metrics daemon)
+#    6. Play chime.mp3 via aplay (ALSA)
+#    7. Hand off to moss-shell on tty1
+# =============================================================================
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+
+# ── Pseudo-filesystems ────────────────────────────────────────────────────────
+mount -t proc     proc     /proc
+mount -t sysfs    sysfs    /sys
+mount -t devtmpfs devtmpfs /dev  2>/dev/null || mount -t tmpfs  tmpfs /dev
+mount -t tmpfs    tmpfs    /run
+mount -t tmpfs    tmpfs    /tmp
+
+# ── Console & log level ───────────────────────────────────────────────────────
+# Silence kernel messages during boot (loglevel=3 already set in grub.cfg,
+# but belt-and-suspenders here)
+[ -e /proc/sys/kernel/printk ] && echo 3 > /proc/sys/kernel/printk 2>/dev/null || true
+
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs  tmpfs  /dev/shm
+
+# ── mdev (BusyBox's udev) ─────────────────────────────────────────────────────
+if command -v mdev >/dev/null 2>&1; then
+  [ -e /proc/sys/kernel/hotplug ] && echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
+  mdev -s
+fi
+
+# ── Hostname ──────────────────────────────────────────────────────────────────
+[ -f /etc/hostname ] && hostname "$(cat /etc/hostname)" || hostname mOSs
+
+# ── Kernel modules ────────────────────────────────────────────────────────────
+# Load modules quietly; failures are non-fatal on real hardware
+load_module() {
+  modprobe "$1" 2>/dev/null || true
+}
+
+# GPU / display — try common hypervisors first, then real hardware, then generic fb.
+# QEMU: virtio_gpu / bochs_drm / qxl
+# VirtualBox (VMSVGA): vmwgfx often works best
+# VMware: vmwgfx
+load_module virtio_gpu
+load_module bochs_drm
+load_module qxl
+load_module vmwgfx
+load_module i915
+load_module amdgpu
+load_module radeon
+load_module nouveau
+load_module drm_kms_helper
+load_module drm
+# Framebuffer fallback
+load_module simpledrm
+load_module vesafb
+load_module efifb
+
+# Input
+load_module usbhid
+load_module hid_generic
+load_module evdev
+load_module psmouse
+load_module mousedev
+load_module serio_raw
+load_module atkbd
+
+# Sound
+load_module snd_hda_intel
+load_module snd_usb_audio
+load_module snd_pcm
+load_module snd_timer
+load_module snd
+
+# ── Wait for /dev/fb0 (GPU ready) ─────────────────────────────────────────────
+# Gives the DRM driver up to 3 seconds to expose a framebuffer.
+_fb_wait=0
+while [ ! -e /dev/fb0 ] && [ $_fb_wait -lt 30 ]; do
+  sleep 0.1
+  _fb_wait=$((_fb_wait + 1))
+done
+# Non-fatal — ncurses TUI works on a VT even without framebuffer
+
+# ── Persistent data partition (optional) ─────────────────────────────────────
+# If /dev/sda2 exists and is ext4, mount it as writable overlay so that
+# user settings, high-scores, and filesystem changes survive reboots.
+PERSIST_DEV="${MOSS_PERSIST_DEV:-/dev/sda2}"
+if [ -b "$PERSIST_DEV" ]; then
+  mkdir -p /mnt/data /mnt/overlay /mnt/upper /mnt/work
+  mount -t ext4 "$PERSIST_DEV" /mnt/data 2>/dev/null && {
+    mkdir -p /mnt/data/upper /mnt/data/work
+    mount -t overlay overlay \
+      -o "lowerdir=/,upperdir=/mnt/data/upper,workdir=/mnt/data/work" \
+      /mnt/overlay 2>/dev/null || true
+    # Re-mount /var/lib/moss from persistent partition
+    [ -d /mnt/data/moss ] || mkdir -p /mnt/data/moss
+    mount --bind /mnt/data/moss /var/lib/moss 2>/dev/null || true
+  }
+fi
+
+# ── System bridge daemon ──────────────────────────────────────────────────────
+# moss-bridge opens a Unix socket at /run/moss-bridge.sock and serves
+# JSON metrics from /proc and /sys. It runs in the background before the
+# shell starts so that the first `fetch` command gets real data.
+if [ -x /bin/moss-bridge ]; then
+  /bin/moss-bridge --socket /run/moss-bridge.sock --daemonize
+  # Give it 0.2s to open the socket
+  sleep 0.2
+fi
+
+# ── Post-boot chime ───────────────────────────────────────────────────────────
+# Played asynchronously so it doesn't delay the shell prompt.
+CHIME=/usr/share/moss/sounds/chime.mp3
+if [ -f "$CHIME" ]; then
+  # Try mpg123 (if bundled), fall back to aplay on a silent .wav, then skip
+  { mpg123 -q "$CHIME" 2>/dev/null & } || \
+  { aplay -q /usr/share/moss/sounds/chime.wav 2>/dev/null & } || true
+fi
+
+
+# ── Deferred resolution request from setres ───────────────────────────────────
+apply_saved_mode() {
+  REQ=""
+  [ -f /var/lib/moss/setres.next ] && REQ="$(cat /var/lib/moss/setres.next 2>/dev/null)"
+  [ -z "$REQ" ] && [ -f /tmp/moss-setres.next ] && REQ="$(cat /tmp/moss-setres.next 2>/dev/null)"
+  [ -z "$REQ" ] && return 0
+  MODE="${REQ%@*}"
+  W="${MODE%x*}"
+  H="${MODE#*x}"
+  for node in /sys/class/drm/*; do
+    [ -d "$node" ] || continue
+    [ -f "$node/modes" ] || continue
+    [ -f "$node/mode" ] || continue
+    if [ -f "$node/status" ] && ! grep -q '^connected' "$node/status" 2>/dev/null; then
+      continue
+    fi
+    if grep -q "^${W}x${H}" "$node/modes" 2>/dev/null; then
+      echo on > "$node/enabled" 2>/dev/null || true
+      echo "${W}x${H}" > "$node/mode" 2>/dev/null && return 0
+    fi
+  done
+  [ -e /sys/class/graphics/fb0/virtual_size ] && echo "${W},${H}" > /sys/class/graphics/fb0/virtual_size 2>/dev/null || true
+  return 0
+}
+apply_saved_mode
+
+# ── Set up VT / console ───────────────────────────────────────────────────────
+# Force tty1 into translated ASCII mode before ncurses starts.
+# Raw/scancode mode makes getch()/mvgetnstr() see garbage bytes instead of keys.
+TTY=/dev/tty1
+if [ -c "$TTY" ]; then
+  exec <"$TTY" >"$TTY" 2>&1
+fi
+kbd_mode -a <"$TTY" >"$TTY" 2>/dev/null || true
+[ -f /usr/share/bkeymaps/us.bmap ] && loadkmap < /usr/share/bkeymaps/us.bmap 2>/dev/null || true
+stty sane icrnl inlcr -igncr opost onlcr isig icanon iexten echo erase '^?' intr '^C' eof '^D' <"$TTY" 2>/dev/null || true
+
+# Load a Unicode-capable console font so Ferris/braille art renders correctly.
+for FONT in   /usr/share/consolefonts/spleen-16x32.psfu.gz   /usr/share/consolefonts/spleen-16x32.psfu   /usr/share/consolefonts/spleen-8x16.psfu.gz   /usr/share/consolefonts/spleen-8x16.psfu
+ do
+  if [ -f "$FONT" ] && command -v setfont >/dev/null 2>&1; then
+    setfont "$FONT" <"$TTY" >"$TTY" 2>/dev/null && break
+  fi
+ done
+
+# Blank the boot text with a clear
+clear 2>/dev/null || printf '\033[2J\033[H'
+
+# ── Terminal environment for ncurses ─────────────────────────────────────────
+# initscr() reads $TERM via setupterm(). Without it, ncurses calls its internal
+# error() handler which — under -fstack-protector-strong — triggers
+# __stack_chk_fail -> SIGABRT (rc=134, "stack smashing detected").
+# "linux" is correct for a Linux VT: supports colour, function keys, ACS chars.
+export TERM=linux
+export TERMINFO=/usr/share/terminfo
+export COLORTERM=truecolor
+
+# ── Launch mOSs shell ─────────────────────────────────────────────────────────
+# Respawn loop: PID 1 must never exit. moss-shell is restarted on logout,
+# reboot command, or crash (brief delay prevents tight crash loops).
+while true; do
+  if [ -x /bin/moss-shell ]; then
+    stty sane icrnl inlcr -igncr opost onlcr isig icanon iexten echo erase '^?' intr '^C' eof '^D' </dev/tty1 2>/dev/null || true
+    echo "[mOSs] launching moss-shell" >> /var/log/moss-shell.log 2>/dev/null || true
+    if command -v cttyhack >/dev/null 2>&1; then
+      setsid cttyhack /bin/moss-shell </dev/tty1 >/dev/tty1 2>>/var/log/moss-shell.log
+    else
+      setsid /bin/moss-shell </dev/tty1 >/dev/tty1 2>>/var/log/moss-shell.log
+    fi
+    RC=$?
+    # abnormal exits: drop to emergency shell instead of silently looping forever
+    if [ "$RC" -ne 0 ]; then
+      echo "[mOSs] moss-shell exited rc=$RC — emergency shell" >/dev/tty1
+      setsid /bin/ash </dev/tty1 >/dev/tty1 2>&1
+    fi
+  else
+    echo "[mOSs] moss-shell not found — emergency shell" >/dev/tty1
+    setsid /bin/ash </dev/tty1 >/dev/tty1 2>&1
+  fi
+  sleep 1
+done
+
+# This line is never reached; the while-loop above is PID 1's event loop.

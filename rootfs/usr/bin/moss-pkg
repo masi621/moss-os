@@ -1,0 +1,124 @@
+#!/bin/sh
+set -eu
+PATH=/bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin
+ROOT=/
+STATE_DIR=/var/lib/moss/pkg
+CACHE_DIR=/var/cache/moss-pkg
+REPOS_CONF=/etc/moss/repos.conf
+mkdir -p "$STATE_DIR/installed" "$CACHE_DIR"
+usage() {
+  cat <<'EOF'
+mOSs package manager
+Usage:
+  pkg help
+  pkg list
+  pkg search <term>
+  pkg install <name|url>
+  pkg remove <name>
+  pkg repos
+
+Repo format:
+  Each non-comment line in /etc/moss/repos.conf is a base URL or local path.
+  A repo must provide index.txt with lines:
+    name|version|url|description
+EOF
+}
+fetch_index() {
+  repo="$1"
+  case "$repo" in
+    http://*|https://*) wget -qO- "$repo/index.txt" ;;
+    file://*) cat "${repo#file://}/index.txt" ;;
+    /*) cat "$repo/index.txt" ;;
+    *) return 1 ;;
+  esac
+}
+find_pkg() {
+  name="$1"
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    case "$repo" in \#*) continue;; esac
+    fetch_index "$repo" 2>/dev/null | while IFS='|' read -r n v u d; do
+      [ "$n" = "$name" ] || continue
+      case "$u" in
+        http://*|https://*|file://*|/*) printf '%s|%s|%s|%s\n' "$n" "$v" "$u" "$d" ;;
+        *) printf '%s|%s|%s/%s|%s\n' "$n" "$v" "$repo" "$u" "$d" ;;
+      esac
+      exit 0
+    done
+  done < "$REPOS_CONF"
+}
+list_installed() {
+  found=0
+  for f in "$STATE_DIR"/installed/*.meta; do
+    [ -e "$f" ] || continue
+    found=1
+    echo "$(basename "$f" .meta): $(sed -n '2p' "$f" 2>/dev/null || echo unknown)"
+  done
+  [ "$found" -eq 1 ] || echo "No packages installed."
+}
+search_pkgs() {
+  term="$1"
+  found=0
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    case "$repo" in \#*) continue;; esac
+    fetch_index "$repo" 2>/dev/null | while IFS='|' read -r n v u d; do
+      echo "$n $v $d" | grep -qi -- "$term" || continue
+      printf '%-20s %-10s %s\n' "$n" "$v" "$d"
+      found=1
+    done
+  done < "$REPOS_CONF"
+  [ "$found" -eq 1 ] || echo "No matching packages found."
+}
+install_pkg() {
+  target="$1"
+  name="$target"
+  version="manual"
+  url="$target"
+  desc="manual install"
+  case "$target" in
+    http://*|https://*|file://*|/*) ;;
+    *)
+      rec="$(find_pkg "$target" | head -n1 || true)"
+      [ -n "$rec" ] || { echo "pkg: package not found: $target" >&2; exit 1; }
+      name=$(printf '%s' "$rec" | cut -d'|' -f1)
+      version=$(printf '%s' "$rec" | cut -d'|' -f2)
+      url=$(printf '%s' "$rec" | cut -d'|' -f3)
+      desc=$(printf '%s' "$rec" | cut -d'|' -f4-)
+      ;;
+  esac
+  tmp="$CACHE_DIR/${name}.tar.gz"
+  case "$url" in
+    http://*|https://*) wget -O "$tmp" "$url" ;;
+    file://*) cp "${url#file://}" "$tmp" ;;
+    /*) cp "$url" "$tmp" ;;
+    *) echo "pkg: unsupported source: $url" >&2; exit 1 ;;
+  esac
+  tar -xzf "$tmp" -C "$ROOT"
+  {
+    echo "$name"
+    echo "$version"
+    echo "$url"
+    echo "$desc"
+  } > "$STATE_DIR/installed/$name.meta"
+  echo "Installed $name $version"
+}
+remove_pkg() {
+  name="$1"
+  meta="$STATE_DIR/installed/$name.meta"
+  [ -f "$meta" ] || { echo "pkg: not installed: $name" >&2; exit 1; }
+  rm -f "$meta"
+  echo "Removed metadata for $name."
+  echo "Note: package archives are extracted directly into /."
+  echo "Automatic file removal is intentionally conservative."
+}
+cmd="${1:-help}"
+case "$cmd" in
+  help|-h|--help) usage ;;
+  list) list_installed ;;
+  repos) cat "$REPOS_CONF" 2>/dev/null || true ;;
+  search) [ $# -ge 2 ] || { echo "pkg: search term required" >&2; exit 1; }; search_pkgs "$2" ;;
+  install) [ $# -ge 2 ] || { echo "pkg: package name or URL required" >&2; exit 1; }; install_pkg "$2" ;;
+  remove|rm|uninstall) [ $# -ge 2 ] || { echo "pkg: package name required" >&2; exit 1; }; remove_pkg "$2" ;;
+  *) usage; exit 1 ;;
+esac

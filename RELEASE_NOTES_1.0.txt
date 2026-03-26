@@ -1,0 +1,26 @@
+mOSs 1.0 foundation patch
+
+Included changes:
+- build.sh
+  - ascii art file falls back to assets/ascii_art.json
+  - better kernel config defaults for QEMU/VirtualBox/VMware-ish graphics/input
+  - stages wall-green.png as wallpaper asset and newLOGO.png as boot logo asset
+  - GRUB theme assets updated for wall-green/newLOGO
+  - clearer final QEMU hint
+- init
+  - loads more VM-friendly display/input modules
+  - loads a Unicode console font early for braille art
+  - logs moss-shell crashes and drops to emergency shell on nonzero exits
+- shell/moss_shell.c
+  - ferris prefers runtime JSON art if present
+  - external command lookup searches /bin, /usr/bin, /usr/local/bin, /sbin, /usr/sbin
+  - adds pkg command hook and help text
+- rootfs/usr/bin/moss-pkg + pkg
+  - simple package manager wrapper (search/install/remove/list)
+- boot/grub/grub.cfg + moss_theme.txt
+  - 1.0 branding and green wallpaper / new logo
+
+Important limits:
+- This is a hardening + foundation update, not a literal full KDE desktop rewrite.
+- Dynamic resolution switching still depends on the guest DRM/fb driver exposing runtime mode changes.
+- VirtualBox/VMware support is best-effort kernel/init improvement, not a universal guarantee.
